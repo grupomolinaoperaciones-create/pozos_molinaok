@@ -3,11 +3,11 @@
 //  (Ver instrucciones en README.md)
 // ============================================================
 const FIREBASE_CONFIG = {
-  apiKey:            "TU_API_KEY",
-  authDomain:        "TU_PROJECT.firebaseapp.com",
-  projectId:         "TU_PROJECT_ID",
-  messagingSenderId: "TU_SENDER_ID",
-  appId:             "TU_APP_ID"
+  apiKey:            "AIzaSyC3foXmWF93SvP1mxxj7f3k8OV1-kEePYM",
+  authDomain:        "pozos-molina.firebaseapp.com",
+  projectId:         "pozos-molina",
+  messagingSenderId: "661435516321",
+  appId:             "1:661435516321:web:4447e092379a5c0aa6f7e0"
   // storageBucket eliminado — fotos se guardan en Firestore (Base64)
 };
 
