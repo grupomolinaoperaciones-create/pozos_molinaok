@@ -137,16 +137,9 @@ function showApp() {
     <div style="font-size:12px;color:var(--gray-600);margin-bottom:4px">${currentUser.nombre}</div>
     <span class="user-pill ${pillClass[currentUser.role]}">${roleLabel[currentUser.role]}</span>`;
 
-  // Botón admin
-  if (CAN_ADMIN_USERS()) {
-    document.getElementById('btnAdminPanel').classList.remove('hidden');
-  }
-
-  // Botón agregar pozo en sidebar
-  if (CAN_ADD_POZOS()) {
-    const sidebar = document.getElementById('sidebarList');
-    // Se añade después de cargar pozos
-  }
+  // Botón admin — toggle explícito en ambos sentidos (corrige bug donde
+  // el botón quedaba visible para un rol no-admin tras cambiar de sesión)
+  document.getElementById('btnAdminPanel').classList.toggle('hidden', !CAN_ADMIN_USERS());
 
   loadPozos();
   loadUsersConfig();
@@ -163,12 +156,19 @@ async function loadPozos() {
   }
 
   try {
-    const snap = await db.collection('pozos').orderBy('campo').orderBy('numero').get();
+    const snap = await db.collection('pozos').get();
     allPozos = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    // Ordenar en el cliente (evita requerir índice compuesto en Firestore)
+    allPozos.sort((a, b) => {
+      const campoCmp = (a.campo || '').localeCompare(b.campo || '');
+      if (campoCmp !== 0) return campoCmp;
+      return (a.numero || 0) - (b.numero || 0);
+    });
     renderSidebar(allPozos);
   } catch(e) {
-    console.error(e);
-    renderSidebar([]);
+    console.error('Error cargando pozos:', e);
+    document.getElementById('sidebarList').innerHTML =
+      `<div class="sidebar-loading" style="color:var(--red)">Error al cargar pozos.<br><span style="font-size:10px">${e.message}</span></div>`;
   }
 }
 
@@ -226,6 +226,7 @@ function filterPozos() {
 // ============================================================
 async function selectPozo(id) {
   currentPozoId = id;
+  currentSection = 'pozos';
   renderSidebar(allPozos, document.getElementById('searchInput').value);
 
   // Cerrar sidebar en móvil
@@ -243,9 +244,14 @@ async function selectPozo(id) {
   buildHeaderActions(pozo);
 
   // Cargar eventos
-  const snap = await db.collection('pozos').doc(id).collection('eventos')
-    .orderBy('fecha', 'desc').get();
-  const eventos = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  let eventos = [];
+  try {
+    const snap = await db.collection('pozos').doc(id).collection('eventos').get();
+    eventos = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    eventos.sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
+  } catch(e) {
+    console.error('Error cargando historial:', e);
+  }
 
   renderPozoContent(pozo, eventos);
 }
@@ -407,6 +413,14 @@ function showModal(name) {
   } else if (name === 'admin') {
     renderAdminPanel();
     document.getElementById('modalAdmin').classList.remove('hidden');
+  } else if (name === 'importConsumo') {
+    importedData = null;
+    document.getElementById('importStep1').classList.remove('hidden');
+    document.getElementById('importStep2').classList.add('hidden');
+    document.getElementById('btnConfirmImport').classList.add('hidden');
+    document.getElementById('pdfDropLabel').textContent = 'Clic para seleccionar el PDF del corte';
+    document.getElementById('consumoPdfInput').value = '';
+    document.getElementById('modalImportConsumo').classList.remove('hidden');
   }
 }
 
@@ -805,9 +819,9 @@ async function exportPDF() {
   LINE();
 
   // Cargar historial
-  const snap = await db.collection('pozos').doc(currentPozoId)
-    .collection('eventos').orderBy('fecha','asc').get();
+  const snap = await db.collection('pozos').doc(currentPozoId).collection('eventos').get();
   const eventos = snap.docs.map(d => d.data());
+  eventos.sort((a, b) => (a.fecha || '').localeCompare(b.fecha || ''));
 
   H2(`HISTORIAL DE TRABAJOS (${eventos.length} registros)`);
 
@@ -876,6 +890,714 @@ function showFirebaseWarning() {
         Sigue los pasos en el archivo <strong>README.md</strong> incluido en el proyecto.
       </p>
     </div>`;
+}
+
+// ============================================================
+//  NAVEGACIÓN ENTRE SECCIONES: POZOS / CONSUMOS
+// ============================================================
+let currentSection = 'pozos';
+
+function switchSection(section) {
+  currentSection = section;
+  document.getElementById('tabPozos').classList.toggle('active', section === 'pozos');
+  document.getElementById('tabConsumos').classList.toggle('active', section === 'consumos');
+  document.getElementById('sidebarSearchWrap').classList.toggle('hidden', section !== 'pozos');
+  document.getElementById('sidebarList').classList.toggle('hidden', section !== 'pozos');
+  document.getElementById('sidebarListConsumos').classList.toggle('hidden', section !== 'consumos');
+
+  if (section === 'pozos') {
+    currentCampoConsumo = null;
+    document.getElementById('mainTitle').textContent = currentPozoId
+      ? document.getElementById('mainTitle').textContent
+      : 'Selecciona un pozo';
+    if (!currentPozoId) {
+      document.getElementById('headerActions').innerHTML = '';
+      document.getElementById('mainContent').innerHTML = `
+        <div class="empty-state">
+          <div class="empty-icon">🚰</div>
+          <p>Selecciona un pozo del panel izquierdo<br>o agrega uno nuevo.</p>
+        </div>`;
+    }
+  } else {
+    loadCamposConsumo();
+    showConsumosOverview();
+  }
+}
+
+// ============================================================
+//  MÓDULO DE CONSUMOS
+// ============================================================
+let camposConsumo    = [];   // [{id, nombre}]
+let currentCampoConsumo = null;
+let importedData      = null; // datos extraídos del PDF antes de confirmar
+let consumoChartData  = null;
+
+const MESES_ES = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+
+// ---- Cargar lista de campos agrícolas desde Firestore ----
+async function loadCamposConsumo() {
+  const list = document.getElementById('sidebarListConsumos');
+  if (!db) { list.innerHTML = `<div class="sidebar-loading">Firebase no configurado.</div>`; return; }
+
+  try {
+    const snap = await db.collection('camposConsumo').get();
+    camposConsumo = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    camposConsumo.sort((a,b) => (a.nombre||'').localeCompare(b.nombre||''));
+    renderSidebarConsumos();
+  } catch(e) {
+    console.error(e);
+    list.innerHTML = `<div class="sidebar-loading" style="color:var(--red)">Error al cargar campos.</div>`;
+  }
+}
+
+function renderSidebarConsumos() {
+  const list = document.getElementById('sidebarListConsumos');
+  let html = `<div class="campo-label">📊 Resumen general</div>
+    <div class="campo-consumo-item${currentCampoConsumo===null?' active':''}" onclick="selectCampoConsumo(null)">
+      <span>Todos los campos</span>
+    </div>
+    <div class="campo-label" style="margin-top:6px">🌾 Campos agrícolas</div>`;
+
+  if (camposConsumo.length === 0) {
+    html += `<div class="sidebar-loading">Sin campos aún.<br>Importa un PDF para crearlos.</div>`;
+  } else {
+    camposConsumo.forEach(c => {
+      html += `<div class="campo-consumo-item${currentCampoConsumo===c.id?' active':''}" onclick="selectCampoConsumo('${c.id}')">
+        <span>${c.nombre}</span>
+      </div>`;
+    });
+  }
+
+  if (CAN_ADD_EVENTOS()) {
+    html += `<button class="btn-import-consumo" onclick="showModal('importConsumo')">＋ Importar corte (PDF)</button>`;
+  }
+
+  list.innerHTML = html;
+}
+
+function selectCampoConsumo(campoId) {
+  currentCampoConsumo = campoId;
+  renderSidebarConsumos();
+  if (campoId === null) showConsumosOverview();
+  else showCampoConsumoDetail(campoId);
+}
+
+// ---- Vista general (todos los campos) ----
+async function showConsumosOverview() {
+  document.getElementById('mainTitle').textContent = 'Consumos de agua — Resumen general';
+  document.getElementById('headerActions').innerHTML = CAN_ADD_EVENTOS()
+    ? `<button class="btn btn-primary" onclick="showModal('importConsumo')">＋ Importar corte (PDF)</button>` : '';
+
+  if (!db) { showFirebaseWarning(); return; }
+
+  document.getElementById('mainContent').innerHTML = `<div class="card"><p style="font-size:13px;color:var(--gray-400)">Cargando datos de consumo...</p></div>`;
+
+  try {
+    const snap = await db.collection('cortesConsumo').get();
+    const cortes = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    cortes.sort((a,b) => (a.fecha||'').localeCompare(b.fecha||''));
+
+    if (cortes.length === 0) {
+      document.getElementById('mainContent').innerHTML = `
+        <div class="empty-state">
+          <div class="empty-icon">📊</div>
+          <p>Aún no hay cortes de consumo registrados.<br>Importa tu primer PDF para comenzar el análisis.</p>
+        </div>`;
+      return;
+    }
+
+    renderConsumosOverview(cortes);
+  } catch(e) {
+    console.error(e);
+    document.getElementById('mainContent').innerHTML = `<div class="card" style="background:var(--red-light)"><p style="color:var(--red);font-size:13px">Error al cargar consumos: ${e.message}</p></div>`;
+  }
+}
+
+function renderConsumosOverview(cortes) {
+  // KPIs del corte más reciente
+  const ultimo = cortes[cortes.length - 1];
+  const totalConsumido = (ultimo.campos || []).reduce((s,c) => s + (c.sumaConsumido || 0), 0);
+  const totalDotacion  = (ultimo.campos || []).reduce((s,c) => s + (c.sumaDotacion || 0), 0);
+  const pctGlobal = totalDotacion ? (totalConsumido / totalDotacion * 100) : 0;
+  const numPozos = (ultimo.campos || []).reduce((s,c) => s + (c.pozos||[]).length, 0);
+
+  const fechaUltimo = formatFechaCorte(ultimo.fecha);
+
+  let html = `
+  <div class="card">
+    <div class="card-title">📅 Último corte registrado: ${fechaUltimo}</div>
+    <div class="kpi-grid">
+      <div class="kpi-card"><div class="kpi-label">Total consumido</div><div class="kpi-value">${fmtNum(totalConsumido)}</div><div class="kpi-sub">litros</div></div>
+      <div class="kpi-card"><div class="kpi-label">Total dotación</div><div class="kpi-value">${fmtNum(totalDotacion)}</div><div class="kpi-sub">litros</div></div>
+      <div class="kpi-card"><div class="kpi-label">% dotación usado</div><div class="kpi-value">${pctGlobal.toFixed(1)}%</div><div class="kpi-sub">promedio global</div></div>
+      <div class="kpi-card"><div class="kpi-label">Pozos reportados</div><div class="kpi-value">${numPozos}</div><div class="kpi-sub">en ${(ultimo.campos||[]).length} campos</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
+      <span>📈 Histórico de consumo por campo</span>
+      <span style="font-size:11px;color:var(--gray-400);font-weight:400">${cortes.length} corte(s)</span>
+    </div>
+    <div class="chart-wrap" id="overviewChartWrap"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">🌾 Resumen por campo — último corte</div>
+    <div class="consumo-table-wrap">
+      <table class="consumo-table">
+        <thead><tr><th>Campo</th><th>Dotación total</th><th>Consumido</th><th>% usado</th><th>Gasto (lps)</th><th>Pozos</th></tr></thead>
+        <tbody>
+          ${(ultimo.campos||[]).map(c => {
+            const pct = c.sumaDotacion ? (c.sumaConsumido / c.sumaDotacion * 100) : 0;
+            return `<tr style="cursor:pointer" onclick="selectCampoConsumo('${campoIdByNombre(c.nombre)}')">
+              <td><strong>${c.nombre}</strong></td>
+              <td>${fmtNum(c.sumaDotacion)}</td>
+              <td>${fmtNum(c.sumaConsumido)}</td>
+              <td>${pctPill(pct)}</td>
+              <td>${(c.sumaGasto||0).toFixed(1)}</td>
+              <td>${(c.pozos||[]).length}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+  </div>`;
+
+  document.getElementById('mainContent').innerHTML = html;
+
+  // Dibujar gráfica histórica por campo
+  drawLineChart('overviewChartWrap', buildCampoSeriesFromCortes(cortes), 'consumido');
+}
+
+function campoIdByNombre(nombre) {
+  const c = camposConsumo.find(x => x.nombre === nombre);
+  return c ? c.id : '';
+}
+
+// ---- Vista detalle de un campo ----
+async function showCampoConsumoDetail(campoId) {
+  const campo = camposConsumo.find(c => c.id === campoId);
+  if (!campo) return;
+
+  document.getElementById('mainTitle').textContent = `Consumos — ${campo.nombre}`;
+  document.getElementById('headerActions').innerHTML = CAN_ADD_EVENTOS()
+    ? `<button class="btn btn-primary" onclick="showModal('importConsumo')">＋ Importar corte (PDF)</button>` : '';
+
+  document.getElementById('mainContent').innerHTML = `<div class="card"><p style="font-size:13px;color:var(--gray-400)">Cargando...</p></div>`;
+
+  try {
+    const snap = await db.collection('cortesConsumo').get();
+    const cortes = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+      .filter(c => (c.campos||[]).some(cc => cc.nombre === campo.nombre));
+    cortes.sort((a,b) => (a.fecha||'').localeCompare(b.fecha||''));
+
+    if (cortes.length === 0) {
+      document.getElementById('mainContent').innerHTML = `
+        <div class="empty-state"><div class="empty-icon">📊</div><p>Sin cortes registrados para este campo aún.</p></div>`;
+      return;
+    }
+
+    renderCampoConsumoDetail(campo, cortes);
+  } catch(e) {
+    console.error(e);
+    document.getElementById('mainContent').innerHTML = `<div class="card" style="background:var(--red-light)"><p style="color:var(--red);font-size:13px">Error: ${e.message}</p></div>`;
+  }
+}
+
+function renderCampoConsumoDetail(campo, cortes) {
+  const ultimo = cortes[cortes.length - 1];
+  const datosUltimo = (ultimo.campos || []).find(c => c.nombre === campo.nombre);
+  const pozos = datosUltimo ? datosUltimo.pozos : [];
+  const pctCampo = datosUltimo && datosUltimo.sumaDotacion ? (datosUltimo.sumaConsumido / datosUltimo.sumaDotacion * 100) : 0;
+
+  let html = `
+  <div class="card">
+    <div class="card-title">📅 Último corte: ${formatFechaCorte(ultimo.fecha)}</div>
+    <div class="kpi-grid">
+      <div class="kpi-card"><div class="kpi-label">Consumido</div><div class="kpi-value">${fmtNum(datosUltimo?.sumaConsumido)}</div><div class="kpi-sub">litros</div></div>
+      <div class="kpi-card"><div class="kpi-label">Dotación</div><div class="kpi-value">${fmtNum(datosUltimo?.sumaDotacion)}</div><div class="kpi-sub">litros</div></div>
+      <div class="kpi-card"><div class="kpi-label">% usado</div><div class="kpi-value">${pctCampo.toFixed(1)}%</div></div>
+      <div class="kpi-card"><div class="kpi-label">Gasto</div><div class="kpi-value">${(datosUltimo?.sumaGasto||0).toFixed(1)}</div><div class="kpi-sub">lps</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">📈 Histórico de consumo — ${campo.nombre}</div>
+    <div class="chart-wrap" id="campoChartWrap"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">💧 Detalle por pozo — ${formatFechaCorte(ultimo.fecha)}</div>
+    <div class="consumo-table-wrap">
+      <table class="consumo-table">
+        <thead><tr><th>Pozo</th><th>Dotación</th><th>Lec. inicial</th><th>Lec. final</th><th>Consumido</th><th>%</th><th>Gasto (lps)</th></tr></thead>
+        <tbody>
+          ${pozos.map(p => `<tr>
+            <td><strong>${p.pozo}</strong></td>
+            <td>${fmtNum(p.dotacion)}</td>
+            <td>${fmtNum(p.lecInicial)}</td>
+            <td>${fmtNum(p.lecFinal)}</td>
+            <td>${fmtNum(p.consumido)}</td>
+            <td>${pctPill(p.pct)}</td>
+            <td>${(p.gasto||0).toFixed(1)}</td>
+          </tr>`).join('')}
+          <tr class="row-suma">
+            <td>SUMA</td>
+            <td>${fmtNum(datosUltimo?.sumaDotacion)}</td>
+            <td>—</td><td>—</td>
+            <td>${fmtNum(datosUltimo?.sumaConsumido)}</td>
+            <td>${pctCampo.toFixed(1)}%</td>
+            <td>${(datosUltimo?.sumaGasto||0).toFixed(1)}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">🗓️ Histórico de cortes — ${campo.nombre}</div>
+    <div class="consumo-table-wrap">
+      <table class="consumo-table">
+        <thead><tr><th>Corte</th><th>Dotación total</th><th>Consumido</th><th>% usado</th><th>Gasto (lps)</th></tr></thead>
+        <tbody>
+          ${cortes.slice().reverse().map(c => {
+            const d = (c.campos||[]).find(x => x.nombre === campo.nombre);
+            if (!d) return '';
+            const pct = d.sumaDotacion ? (d.sumaConsumido / d.sumaDotacion * 100) : 0;
+            return `<tr>
+              <td>${formatFechaCorte(c.fecha)}</td>
+              <td>${fmtNum(d.sumaDotacion)}</td>
+              <td>${fmtNum(d.sumaConsumido)}</td>
+              <td>${pctPill(pct)}</td>
+              <td>${(d.sumaGasto||0).toFixed(1)}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+  </div>`;
+
+  document.getElementById('mainContent').innerHTML = html;
+
+  // Serie histórica solo de este campo, por pozo
+  const series = {};
+  cortes.forEach(c => {
+    const d = (c.campos||[]).find(x => x.nombre === campo.nombre);
+    if (!d) return;
+    (d.pozos||[]).forEach(p => {
+      if (!series[p.pozo]) series[p.pozo] = [];
+      series[p.pozo].push({ fecha: c.fecha, valor: p.consumido });
+    });
+  });
+  drawLineChart('campoChartWrap', series, 'consumido');
+}
+
+// ---- Helpers de formato ----
+function fmtNum(n) {
+  if (n === undefined || n === null || isNaN(n)) return '—';
+  return Math.round(n).toLocaleString('es-MX');
+}
+
+function pctPill(pct) {
+  if (pct === undefined || pct === null || isNaN(pct)) return '—';
+  const cls = pct >= 90 ? 'pct-over' : pct >= 70 ? 'pct-warn' : 'pct-ok';
+  return `<span class="pct-pill ${cls}">${pct.toFixed(1)}%</span>`;
+}
+
+function formatFechaCorte(fechaStr) {
+  if (!fechaStr) return '—';
+  const d = new Date(fechaStr + 'T12:00:00');
+  return d.toLocaleDateString('es-MX', { day:'numeric', month:'long', year:'numeric' });
+}
+
+function buildCampoSeriesFromCortes(cortes) {
+  const series = {};
+  cortes.forEach(c => {
+    (c.campos||[]).forEach(cc => {
+      if (!series[cc.nombre]) series[cc.nombre] = [];
+      series[cc.nombre].push({ fecha: c.fecha, valor: cc.sumaConsumido });
+    });
+  });
+  return series;
+}
+
+// ============================================================
+//  GRÁFICA DE LÍNEAS (SVG nativo, sin librerías)
+// ============================================================
+const CHART_COLORS = ['#185FA5','#0F6E56','#854F0B','#993556','#534AB7','#3B6D11','#A32D2D','#5F5E5A'];
+
+function drawLineChart(containerId, series, label) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+
+  const keys = Object.keys(series);
+  if (keys.length === 0) { container.innerHTML = `<p style="font-size:12px;color:var(--gray-400)">Sin datos suficientes para graficar.</p>`; return; }
+
+  // Fechas únicas ordenadas
+  const allFechas = [...new Set(keys.flatMap(k => series[k].map(p => p.fecha)))].sort();
+  if (allFechas.length < 2) {
+    container.innerHTML = `<p style="font-size:12px;color:var(--gray-400)">Se necesitan al menos 2 cortes para mostrar tendencia. Por ahora solo hay ${allFechas.length}.</p>`;
+    return;
+  }
+
+  const W = container.clientWidth || 600, H = 240, M = { t:20, r:20, b:34, l:60 };
+  const plotW = W - M.l - M.r, plotH = H - M.t - M.b;
+
+  let maxVal = 0;
+  keys.forEach(k => series[k].forEach(p => { if (p.valor > maxVal) maxVal = p.valor; }));
+  maxVal = maxVal * 1.15 || 1;
+
+  const xStep = plotW / (allFechas.length - 1);
+  const xPos = i => M.l + i * xStep;
+  const yPos = v => M.t + plotH - (v / maxVal) * plotH;
+
+  let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:${H}px" role="img" aria-label="Gráfica de consumo histórico">`;
+
+  // Grid horizontal
+  for (let g = 0; g <= 4; g++) {
+    const gy = M.t + plotH - (g/4) * plotH;
+    svg += `<line x1="${M.l}" y1="${gy}" x2="${W-M.r}" y2="${gy}" stroke="#E5E3DA" stroke-width="1"/>`;
+    svg += `<text x="${M.l-8}" y="${gy+3}" font-size="9.5" fill="#888780" text-anchor="end">${fmtNum(maxVal*g/4)}</text>`;
+  }
+
+  // Eje X labels
+  allFechas.forEach((f, i) => {
+    const d = new Date(f + 'T12:00:00');
+    const lbl = d.toLocaleDateString('es-MX', { month:'short', year:'2-digit' });
+    svg += `<text x="${xPos(i)}" y="${H-12}" font-size="9.5" fill="#888780" text-anchor="middle">${lbl}</text>`;
+  });
+
+  // Líneas por serie
+  keys.forEach((k, ki) => {
+    const color = CHART_COLORS[ki % CHART_COLORS.length];
+    const pointsByFecha = {};
+    series[k].forEach(p => pointsByFecha[p.fecha] = p.valor);
+
+    let pathD = '';
+    let points = '';
+    allFechas.forEach((f, i) => {
+      if (pointsByFecha[f] === undefined) return;
+      const x = xPos(i), y = yPos(pointsByFecha[f]);
+      pathD += (pathD === '' ? 'M' : 'L') + x + ',' + y + ' ';
+      points += `<circle cx="${x}" cy="${y}" r="3" fill="${color}"/>`;
+    });
+
+    svg += `<path d="${pathD}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    svg += points;
+  });
+
+  svg += `</svg>`;
+
+  let legend = `<div class="chart-legend">`;
+  keys.forEach((k, ki) => {
+    legend += `<div class="chart-legend-item"><span class="chart-legend-dot" style="background:${CHART_COLORS[ki % CHART_COLORS.length]}"></span>${k}</div>`;
+  });
+  legend += `</div>`;
+
+  container.innerHTML = svg + legend;
+}
+
+// ============================================================
+//  IMPORTAR PDF DE CONSUMOS
+// ============================================================
+if (typeof pdfjsLib !== 'undefined') {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+}
+
+async function handlePdfUpload(input) {
+  const file = input.files[0];
+  if (!file) return;
+
+  document.getElementById('pdfDropLabel').textContent = 'Leyendo PDF...';
+
+  try {
+    const arrayBuffer = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+
+    let fullText = '';
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const content = await page.getTextContent();
+
+      // Agrupar por línea usando posición Y, con tolerancia para pequeñas
+      // diferencias de redondeo entre caracteres de la misma línea
+      const items = content.items
+        .filter(it => it.str && it.str.trim() !== '')
+        .map(it => ({ str: it.str, x: it.transform[4], y: it.transform[5] }));
+
+      items.sort((a, b) => b.y - a.y || a.x - b.x);
+
+      const TOL = 2.5; // tolerancia en puntos para considerar misma línea
+      const lineGroups = [];
+      items.forEach(it => {
+        let group = lineGroups.find(g => Math.abs(g.y - it.y) <= TOL);
+        if (!group) { group = { y: it.y, items: [] }; lineGroups.push(group); }
+        group.items.push(it);
+      });
+
+      lineGroups.sort((a, b) => b.y - a.y);
+      lineGroups.forEach(g => {
+        g.items.sort((a, b) => a.x - b.x);
+        fullText += g.items.map(it => it.str).join(' ') + '\n';
+      });
+    }
+
+    const parsed = parseConsumoPDF(fullText);
+
+    if (!parsed.campos.length) {
+      alert('No se pudo detectar la estructura esperada en el PDF. Verifica que el formato sea el mismo (Campo Agrícola / pozo / dotación / lecturas).');
+      document.getElementById('pdfDropLabel').textContent = 'Clic para seleccionar el PDF del corte';
+      return;
+    }
+
+    importedData = parsed;
+    showImportPreview(parsed);
+
+  } catch(e) {
+    console.error(e);
+    alert('Error al leer el PDF: ' + e.message);
+    document.getElementById('pdfDropLabel').textContent = 'Clic para seleccionar el PDF del corte';
+  }
+}
+
+// ---- Parser de texto extraído del PDF ----
+function parseConsumoPDF(text) {
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+  const campos = [];
+  let current = null;
+  let fechaCorte = null;
+  const numTokenRe = /^-?[\d,]*\.?\d+$/;
+
+  lines.forEach(line => {
+    // Detectar inicio de campo
+    const campoMatch = line.match(/Campo\s+Agr[ií]cola\s+(.+)/i);
+    if (campoMatch) {
+      if (current) campos.push(current);
+      current = { nombre: campoMatch[1].replace(/\.$/, '').trim(), pozos: [] };
+      return;
+    }
+
+    if (!current) return;
+
+    // Saltar líneas de encabezado
+    if (/^(lec\.?\s*final|pozo\s+dotaci|vol\s*%|consumido|gasto)/i.test(line)) return;
+
+    // Línea de fecha de corte (ej. "30-abr-26 vol % (lps)") — es encabezado, no datos
+    const fechaMatch = line.match(/^(\d{1,2})-([a-zé]{3})-(\d{2,4})\b/i);
+    if (fechaMatch) {
+      const f = parseFechaCorta(fechaMatch[1], fechaMatch[2], fechaMatch[3]);
+      if (f) fechaCorte = f;
+      return;
+    }
+
+    const tokens = line.split(/\s+/);
+
+    // Línea SUMA
+    if (/^suma/i.test(tokens[0])) {
+      const nums = tokens.slice(1).filter(t => numTokenRe.test(t)).map(parseNum);
+      if (nums.length >= 4) {
+        current.sumaDotacion  = nums[0];
+        current.sumaConsumido = nums[1];
+        current.sumaPct       = nums[2];
+        current.sumaGasto     = nums[3];
+      }
+      return;
+    }
+
+    // Tomar los últimos 6 tokens numéricos consecutivos desde el final de la línea
+    const numericTokens = [];
+    let i = tokens.length - 1;
+    while (i >= 0 && numericTokens.length < 6) {
+      if (numTokenRe.test(tokens[i])) {
+        numericTokens.unshift(tokens[i]);
+        i--;
+      } else {
+        break;
+      }
+    }
+
+    if (numericTokens.length >= 6) {
+      const nombre = tokens.slice(0, i + 1).join(' ').trim();
+      const vals = numericTokens.slice(-6).map(parseNum);
+      current.pozos.push({
+        pozo:       nombre || `Pozo ${current.pozos.length + 1}`,
+        dotacion:   vals[0],
+        lecInicial: vals[1],
+        lecFinal:   vals[2],
+        consumido:  vals[3],
+        pct:        vals[4],
+        gasto:      vals[5]
+      });
+    }
+  });
+
+  if (current) campos.push(current);
+
+  // Calcular sumas si no se detectaron explícitamente
+  campos.forEach(c => {
+    if (c.sumaDotacion === undefined) c.sumaDotacion = c.pozos.reduce((s,p)=>s+(p.dotacion||0),0);
+    if (c.sumaConsumido === undefined) c.sumaConsumido = c.pozos.reduce((s,p)=>s+(p.consumido||0),0);
+    if (c.sumaGasto === undefined) c.sumaGasto = c.pozos.reduce((s,p)=>s+(p.gasto||0),0);
+  });
+
+  return { fechaCorte, campos };
+}
+
+function parseNum(str) {
+  return parseFloat(str.replace(/,/g, '')) || 0;
+}
+
+function parseFechaCorta(dia, mesAbr, anio) {
+  const meses = { ene:'01', feb:'02', mar:'03', abr:'04', may:'05', jun:'06', jul:'07', ago:'08', sep:'09', oct:'10', nov:'11', dic:'12' };
+  const mm = meses[mesAbr.toLowerCase().substring(0,3)];
+  if (!mm) return null;
+  let yyyy = anio.length === 2 ? '20' + anio : anio;
+  const dd = dia.padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+// ---- Vista previa editable antes de guardar ----
+function showImportPreview(data) {
+  document.getElementById('importStep1').classList.add('hidden');
+  document.getElementById('importStep2').classList.remove('hidden');
+  document.getElementById('btnConfirmImport').classList.remove('hidden');
+
+  document.getElementById('importFechaCorte').value = data.fechaCorte || new Date().toISOString().split('T')[0];
+
+  let html = '';
+  data.campos.forEach((c, ci) => {
+    html += `<div class="import-campo-block">
+      <div class="import-campo-title">🌾 ${c.nombre} <span style="font-size:11px;color:var(--gray-400);font-weight:400">(${c.pozos.length} pozos)</span></div>
+      <div class="consumo-table-wrap">
+        <table class="consumo-table">
+          <thead><tr><th>Pozo</th><th>Dotación</th><th>Lec. inicial</th><th>Lec. final</th><th>Consumido</th><th>%</th><th>Gasto</th><th></th></tr></thead>
+          <tbody>
+            ${c.pozos.map((p, pi) => `<tr id="prevrow-${ci}-${pi}">
+              <td>${p.pozo}</td>
+              <td>${fmtNum(p.dotacion)}</td>
+              <td>${fmtNum(p.lecInicial)}</td>
+              <td>${fmtNum(p.lecFinal)}</td>
+              <td>${fmtNum(p.consumido)}</td>
+              <td>${(p.pct||0).toFixed(1)}%</td>
+              <td>${(p.gasto||0).toFixed(1)}</td>
+              <td><button class="row-edit-btn" onclick="editImportRow(${ci},${pi})" title="Editar">✎</button></td>
+            </tr>`).join('')}
+            <tr class="row-suma">
+              <td>SUMA</td><td>${fmtNum(c.sumaDotacion)}</td><td>—</td><td>—</td>
+              <td>${fmtNum(c.sumaConsumido)}</td><td>${(c.sumaPct||0).toFixed(1)}%</td><td>${(c.sumaGasto||0).toFixed(1)}</td><td></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+  });
+
+  document.getElementById('importPreviewTables').innerHTML = html;
+}
+
+function editImportRow(ci, pi) {
+  const p = importedData.campos[ci].pozos[pi];
+  const body = document.getElementById('editConsumoRowBody');
+  body.innerHTML = `
+    <div class="form-group"><label class="form-label">Nombre del pozo</label><input class="form-input" id="er_pozo" value="${p.pozo}"></div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">Dotación</label><input class="form-input" id="er_dotacion" type="number" value="${p.dotacion}"></div>
+      <div class="form-group"><label class="form-label">Gasto (lps)</label><input class="form-input" id="er_gasto" type="number" value="${p.gasto}"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">Lectura inicial</label><input class="form-input" id="er_lecInicial" type="number" value="${p.lecInicial}"></div>
+      <div class="form-group"><label class="form-label">Lectura final</label><input class="form-input" id="er_lecFinal" type="number" value="${p.lecFinal}"></div>
+    </div>
+    <div class="form-group"><label class="form-label">Consumido (se recalcula si dejas en blanco)</label><input class="form-input" id="er_consumido" type="number" value="${p.consumido}"></div>
+  `;
+  body.dataset.ci = ci;
+  body.dataset.pi = pi;
+  document.getElementById('modalEditConsumoRow').classList.remove('hidden');
+  document.getElementById('modalOverlay').classList.remove('hidden');
+}
+
+function saveEditConsumoRow() {
+  const body = document.getElementById('editConsumoRowBody');
+  const ci = parseInt(body.dataset.ci), pi = parseInt(body.dataset.pi);
+  const p = importedData.campos[ci].pozos[pi];
+
+  p.pozo       = document.getElementById('er_pozo').value;
+  p.dotacion   = parseFloat(document.getElementById('er_dotacion').value) || 0;
+  p.gasto      = parseFloat(document.getElementById('er_gasto').value) || 0;
+  p.lecInicial = parseFloat(document.getElementById('er_lecInicial').value) || 0;
+  p.lecFinal   = parseFloat(document.getElementById('er_lecFinal').value) || 0;
+  const consumidoInput = document.getElementById('er_consumido').value;
+  p.consumido  = consumidoInput !== '' ? parseFloat(consumidoInput) : (p.lecFinal - p.lecInicial);
+  p.pct        = p.dotacion ? (p.consumido / p.dotacion * 100) : 0;
+
+  // Recalcular sumas del campo
+  const c = importedData.campos[ci];
+  c.sumaDotacion  = c.pozos.reduce((s,x)=>s+(x.dotacion||0),0);
+  c.sumaConsumido = c.pozos.reduce((s,x)=>s+(x.consumido||0),0);
+  c.sumaGasto     = c.pozos.reduce((s,x)=>s+(x.gasto||0),0);
+  c.sumaPct       = c.sumaDotacion ? (c.sumaConsumido / c.sumaDotacion * 100) : 0;
+
+  hideModal('modalEditConsumoRow');
+  showImportPreview(importedData);
+}
+
+// ---- Confirmar y guardar el corte completo en Firestore ----
+async function confirmImportConsumo() {
+  if (!importedData || !db) return;
+
+  const fecha = document.getElementById('importFechaCorte').value;
+  if (!fecha) { alert('Indica la fecha del corte.'); return; }
+
+  const btn = document.getElementById('btnConfirmImport');
+  btn.disabled = true;
+  btn.textContent = 'Guardando...';
+
+  try {
+    // 1. Crear campos agrícolas que no existan aún
+    for (const c of importedData.campos) {
+      const exists = camposConsumo.find(x => x.nombre === c.nombre);
+      if (!exists) {
+        const ref = await db.collection('camposConsumo').add({ nombre: c.nombre, creadoEn: firebase.firestore.FieldValue.serverTimestamp() });
+        camposConsumo.push({ id: ref.id, nombre: c.nombre });
+      }
+    }
+
+    // 2. Guardar el corte completo (un documento por fecha, con todos los campos anidados)
+    const corteData = {
+      fecha,
+      campos: importedData.campos.map(c => ({
+        nombre: c.nombre,
+        sumaDotacion: c.sumaDotacion, sumaConsumido: c.sumaConsumido,
+        sumaPct: c.sumaPct, sumaGasto: c.sumaGasto,
+        pozos: c.pozos
+      })),
+      registradoPor: currentUser.nombre,
+      creadoEn: firebase.firestore.FieldValue.serverTimestamp()
+    };
+
+    // Usar la fecha como ID para evitar duplicados si se reimporta
+    await db.collection('cortesConsumo').doc(fecha).set(corteData);
+
+    hideModal('modalImportConsumo');
+    importedData = null;
+    document.getElementById('importStep1').classList.remove('hidden');
+    document.getElementById('importStep2').classList.add('hidden');
+    document.getElementById('btnConfirmImport').classList.add('hidden');
+    document.getElementById('pdfDropLabel').textContent = 'Clic para seleccionar el PDF del corte';
+    document.getElementById('consumoPdfInput').value = '';
+
+    await loadCamposConsumo();
+    if (currentCampoConsumo) showCampoConsumoDetail(currentCampoConsumo);
+    else showConsumosOverview();
+
+  } catch(e) {
+    console.error(e);
+    alert('Error al guardar: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Guardar corte';
+  }
 }
 
 // Permitir login con Enter

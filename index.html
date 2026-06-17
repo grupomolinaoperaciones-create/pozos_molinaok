@@ -8,6 +8,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
 <!-- Storage eliminado — fotos se guardan en Firestore -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -50,13 +51,26 @@
 
     <div class="sidebar-user" id="sidebarUser"></div>
 
-    <div class="sidebar-search">
+    <div class="sidebar-tabs">
+      <button class="sidebar-tab active" id="tabPozos" onclick="switchSection('pozos')">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4.5 8-11.8A8 8 0 0 0 4 10.2C4 17.5 12 22 12 22z"/><circle cx="12" cy="10" r="3"/></svg>
+        Pozos
+      </button>
+      <button class="sidebar-tab" id="tabConsumos" onclick="switchSection('consumos')">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M18.7 8l-5.1 5.1-2.8-2.8L7 14"/></svg>
+        Consumos
+      </button>
+    </div>
+
+    <div class="sidebar-search" id="sidebarSearchWrap">
       <input type="text" placeholder="Buscar pozo..." id="searchInput" oninput="filterPozos()">
     </div>
 
     <div class="sidebar-list" id="sidebarList">
       <div class="sidebar-loading">Cargando pozos...</div>
     </div>
+
+    <div class="sidebar-list hidden" id="sidebarListConsumos"></div>
 
     <div class="sidebar-footer">
       <button class="btn-admin hidden" id="btnAdminPanel" onclick="showSection('admin')">
@@ -220,6 +234,50 @@
     </div>
     <div class="modal-body" style="text-align:center;padding:0">
       <img id="modalFotoImg" src="" alt="Foto" style="max-width:100%;max-height:70vh;object-fit:contain;display:block;margin:0 auto">
+    </div>
+  </div>
+
+  <!-- MODAL: IMPORTAR CORTE DE CONSUMOS -->
+  <div class="modal modal-wide hidden" id="modalImportConsumo">
+    <div class="modal-header">
+      <h3>Importar corte de consumos</h3>
+      <button class="modal-close" onclick="hideModal('modalImportConsumo')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div id="importStep1">
+        <p style="font-size:12px;color:var(--gray-400);margin-bottom:10px">
+          Sube el PDF del corte mensual (formato Campo Agrícola / pozo / dotación / lecturas). Se extraerán los datos automáticamente y podrás revisarlos antes de guardar.
+        </p>
+        <div class="file-drop" id="pdfDrop" onclick="document.getElementById('consumoPdfInput').click()">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity:.4"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          <span id="pdfDropLabel">Clic para seleccionar el PDF del corte</span>
+        </div>
+        <input type="file" id="consumoPdfInput" accept="application/pdf" style="display:none" onchange="handlePdfUpload(this)">
+      </div>
+      <div id="importStep2" class="hidden">
+        <div class="form-group">
+          <label class="form-label">Fecha de corte detectada</label>
+          <input class="form-input" id="importFechaCorte" type="date">
+        </div>
+        <div id="importPreviewTables"></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="hideModal('modalImportConsumo')">Cancelar</button>
+      <button class="btn btn-primary hidden" id="btnConfirmImport" onclick="confirmImportConsumo()">Guardar corte</button>
+    </div>
+  </div>
+
+  <!-- MODAL: AGREGAR/EDITAR POZO MANUAL EN CONSUMO -->
+  <div class="modal hidden" id="modalEditConsumoRow">
+    <div class="modal-header">
+      <h3>Editar registro de pozo</h3>
+      <button class="modal-close" onclick="hideModal('modalEditConsumoRow')">✕</button>
+    </div>
+    <div class="modal-body" id="editConsumoRowBody"></div>
+    <div class="modal-footer">
+      <button class="btn" onclick="hideModal('modalEditConsumoRow')">Cancelar</button>
+      <button class="btn btn-primary" onclick="saveEditConsumoRow()">Guardar</button>
     </div>
   </div>
 

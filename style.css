@@ -277,6 +277,184 @@ body {
   text-align: center;
 }
 
+/* ===== SIDEBAR TABS ===== */
+.sidebar-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 10px 4px;
+  border-bottom: 0.5px solid var(--border);
+}
+
+.sidebar-tab {
+  flex: 1;
+  padding: 6px 8px;
+  font-size: 11.5px;
+  font-weight: 500;
+  border: none;
+  background: var(--gray-50);
+  color: var(--gray-400);
+  border-radius: var(--radius);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  transition: background .12s, color .12s;
+}
+
+.sidebar-tab:hover { background: var(--gray-100); color: var(--gray-600); }
+.sidebar-tab.active { background: var(--blue-light); color: var(--blue-dark); }
+
+/* ===== CONSUMOS: CAMPO GROUP ===== */
+.campo-consumo-item {
+  padding: 8px 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--gray-600);
+  border-radius: 6px;
+  margin: 1px 6px;
+}
+
+.campo-consumo-item:hover { background: var(--gray-100); }
+.campo-consumo-item.active { background: var(--blue-light); color: var(--blue-dark); font-weight: 500; }
+
+.btn-import-consumo {
+  margin: 8px 10px 0;
+  padding: 7px 12px;
+  border: 0.5px dashed var(--border-med);
+  border-radius: var(--radius);
+  font-size: 12px;
+  color: var(--gray-400);
+  background: none;
+  cursor: pointer;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: calc(100% - 20px);
+}
+
+.btn-import-consumo:hover { background: var(--gray-50); color: var(--gray-600); }
+
+/* ===== CONSUMO TABLES ===== */
+.consumo-table-wrap { overflow-x: auto; margin-top: 4px; }
+
+.consumo-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.consumo-table th {
+  text-align: left;
+  padding: 7px 10px;
+  background: var(--gray-50);
+  color: var(--gray-400);
+  font-weight: 600;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: .03em;
+  white-space: nowrap;
+  border-bottom: 0.5px solid var(--border);
+}
+
+.consumo-table td {
+  padding: 7px 10px;
+  border-bottom: 0.5px solid var(--border);
+  white-space: nowrap;
+  color: var(--gray-800);
+}
+
+.consumo-table tr.row-suma td {
+  font-weight: 700;
+  background: var(--gray-50);
+  border-top: 1px solid var(--border-med);
+}
+
+.consumo-table tr:hover td { background: var(--gray-50); }
+.consumo-table tr.row-suma:hover td { background: var(--gray-100); }
+
+.pct-pill {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.pct-ok    { background: var(--green-light); color: var(--green); }
+.pct-warn  { background: var(--amber-light); color: var(--amber); }
+.pct-over  { background: var(--red-light);   color: var(--red); }
+
+.consumo-table input.cell-input {
+  width: 90px;
+  padding: 4px 6px;
+  font-size: 12px;
+  border: 0.5px solid var(--border-med);
+  border-radius: 5px;
+}
+
+.row-edit-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--gray-400);
+  padding: 3px;
+  border-radius: 4px;
+}
+
+.row-edit-btn:hover { color: var(--blue); background: var(--blue-light); }
+
+/* ===== KPI CARDS ===== */
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+}
+
+.kpi-card {
+  background: var(--gray-50);
+  border: 0.5px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+}
+
+.kpi-label { font-size: 10.5px; color: var(--gray-400); font-weight: 500; margin-bottom: 4px; }
+.kpi-value { font-size: 20px; font-weight: 700; color: var(--gray-800); }
+.kpi-sub   { font-size: 11px; color: var(--gray-400); margin-top: 2px; }
+
+/* ===== MODAL WIDE ===== */
+.modal-wide { max-width: 720px; }
+
+.import-campo-block { margin-bottom: 20px; }
+.import-campo-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--blue-dark);
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ===== CHART ===== */
+.chart-wrap { position: relative; width: 100%; }
+.chart-legend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; font-size: 11px; }
+.chart-legend-item { display: flex; align-items: center; gap: 5px; color: var(--gray-600); }
+.chart-legend-dot { width: 9px; height: 9px; border-radius: 2px; flex-shrink: 0; }
+
+.select-inline {
+  padding: 5px 8px;
+  font-size: 12px;
+  border: 0.5px solid var(--border-med);
+  border-radius: var(--radius);
+  background: white;
+  color: var(--gray-800);
+}
+
 /* ===== MAIN ===== */
 .main {
   flex: 1;

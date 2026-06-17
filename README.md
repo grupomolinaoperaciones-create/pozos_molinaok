@@ -161,13 +161,34 @@ desde la propia plataforma en **Gestionar usuarios**.
 
 ## 👥 Roles de usuario
 
-| Rol | Ver pozos | Ver historial | Agregar trabajos | Editar datos técnicos | Eliminar | Gestionar usuarios |
-|---|---|---|---|---|---|---|
-| **Admin** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Operador** | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
-| **Visor** | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Rol | Ver pozos | Ver historial | Agregar trabajos | Editar datos técnicos | Eliminar | Gestionar usuarios | Importar consumos |
+|---|---|---|---|---|---|---|---|
+| **Admin** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Operador** | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ |
+| **Visor** | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 
 ---
+
+## 📊 Módulo de Consumos de agua
+
+Además del historial de mantenimiento, la plataforma incluye una segunda pestaña **"Consumos"** para llevar el control mensual de extracción de agua por campo agrícola.
+
+**Cómo funciona:**
+1. Ve a la pestaña **Consumos** en el panel izquierdo
+2. Clic en **"+ Importar corte (PDF)"**
+3. Sube el PDF del corte mensual (mismo formato: Campo Agrícola → pozo → dotación → lecturas → SUMA)
+4. La plataforma extrae automáticamente los datos y los muestra en una vista previa editable
+5. Puedes corregir cualquier dato antes de guardar (clic en el ícono ✎ de cada fila)
+6. Al guardar, se crean automáticamente los campos agrícolas nuevos y quedan disponibles para análisis
+
+**Qué incluye el análisis:**
+- Resumen general con KPIs del último corte (consumido, dotación, % usado, pozos reportados)
+- Gráfica histórica de consumo por campo a través de los meses
+- Detalle por pozo de cada campo, con histórico de cortes
+- Indicador visual de % de dotación usado (verde / amarillo / rojo según el nivel)
+
+Cada corte se identifica por su fecha, así que si vuelves a importar el mismo mes, se actualiza en vez de duplicarse.
+
 
 ## 📁 Archivos del proyecto
 
