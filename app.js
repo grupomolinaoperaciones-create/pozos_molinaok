@@ -268,7 +268,51 @@ function buildHeaderActions(pozo) {
       Registrar trabajo</button>`;
   }
 
+  if (CAN_DELETE()) {
+    html += `<button class="btn btn-danger" onclick="deletePozo()" title="Eliminar este pozo">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+      Eliminar pozo</button>`;
+  }
+
   div.innerHTML = html;
+}
+
+// ============================================================
+//  ELIMINAR POZO
+// ============================================================
+async function deletePozo() {
+  const pozo = allPozos.find(p => p.id === currentPozoId);
+  if (!pozo) return;
+
+  const confirmText = `¿Eliminar el Pozo ${pozo.numero} de ${pozo.campo}?\n\nEsto borrará también todo su historial de trabajos. Esta acción no se puede deshacer.`;
+  if (!confirm(confirmText)) return;
+
+  if (!db) { alert('Firebase no configurado.'); return; }
+
+  try {
+    // Borrar primero todos los eventos de la subcolección
+    const snap = await db.collection('pozos').doc(currentPozoId).collection('eventos').get();
+    const deletes = snap.docs.map(d => db.collection('pozos').doc(currentPozoId).collection('eventos').doc(d.id).delete());
+    await Promise.all(deletes);
+
+    // Borrar el documento del pozo
+    await db.collection('pozos').doc(currentPozoId).delete();
+
+    // Actualizar estado local
+    allPozos = allPozos.filter(p => p.id !== currentPozoId);
+    currentPozoId = null;
+
+    renderSidebar(allPozos, document.getElementById('searchInput').value);
+    document.getElementById('mainTitle').textContent = 'Selecciona un pozo';
+    document.getElementById('headerActions').innerHTML = '';
+    document.getElementById('mainContent').innerHTML = `
+      <div class="empty-state">
+        <div class="empty-icon">🚰</div>
+        <p>Pozo eliminado correctamente.<br>Selecciona otro pozo o agrega uno nuevo.</p>
+      </div>`;
+  } catch(e) {
+    alert('Error al eliminar: ' + e.message);
+  }
 }
 
 // ============================================================
